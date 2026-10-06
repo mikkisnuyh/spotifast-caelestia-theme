@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch the Caelestia colour scheme for Spotifast
+
+[Path]
+# %S is ${XDG_STATE_HOME:-~/.local/state} for the user manager.
+PathChanged=%S/caelestia/scheme.json
+Unit=caelestia-spotifast.service
+
+[Install]
+WantedBy=default.target

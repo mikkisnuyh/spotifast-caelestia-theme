@@ -1,0 +1,6 @@
+[Unit]
+Description=Write the Caelestia colour scheme as a Spotifast palette
+
+[Service]
+Type=oneshot
+ExecStart=@BIN@/caelestia-spotifast

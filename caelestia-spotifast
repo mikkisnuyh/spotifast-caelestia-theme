@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""Write the current Caelestia colour scheme as a Spotifast palette.
+
+Run by Caelestia's `theme.postHook` (which passes SCHEME_MODE and
+SCHEME_COLOURS) or on its own, in which case the scheme is read from
+${XDG_STATE_HOME:-~/.local/state}/caelestia/scheme.json.
+
+The palette is written to Spotifast's themes folder as `caelestia.json`.
+Spotifast on Linux notices the change by itself; `spotifast reload-themes`
+is also sent to a running instance for older versions.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+FILENAME = "caelestia.json"
+FLATPAK_ID = "rocks.spotifast.Spotifast"
+HEX = re.compile(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?")
+
+# Spotifast colour -> Caelestia (Material You) colour role. `warning` is left
+# to Spotifast: Caelestia shifts its named colours (`yellow` included) towards
+# the scheme's primary, so none of them is reliably amber.
+ROLES = {
+    "window": "surface",
+    "panel": "surfaceContainerLow",
+    "surface": "surfaceContainer",
+    "surface_hover": "surfaceContainerHigh",
+    "surface_active": "surfaceContainerHighest",
+    "outline": "outlineVariant",
+    "text": "onSurface",
+    "secondary": "onSurfaceVariant",
+    "dim": "outline",
+    "accent": "primary",
+    "on_accent": "onPrimary",
+    "danger": "error",
+    "overlay": "surfaceContainerHigh",
+}
+
+# Spotifast's own shadow strengths for its dark and light palettes.
+SHADOW_ALPHA = {"dark": "8c", "light": "32"}
+
+
+def home() -> Path:
+    return Path(os.environ.get("HOME") or Path.home())
+
+
+def xdg(name: str, fallback: str) -> Path:
+    value = os.environ.get(name)
+    return Path(value) if value and os.path.isabs(value) else home() / fallback
+
+
+def clean(value: object) -> str | None:
+    """A bare RRGGBB or RRGGBBAA hex string, or None."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip().removeprefix("#")
+    return value.lower() if HEX.fullmatch(value) else None
+
+
+def mix(a: str, b: str, amount: float) -> str:
+    """`a` moved `amount` of the way towards `b` (RGB only)."""
+    channels = (
+        round(int(a[i : i + 2], 16) * (1 - amount) + int(b[i : i + 2], 16) * amount)
+        for i in (0, 2, 4)
+    )
+    return "".join(f"{c:02x}" for c in channels)
+
+
+def load_scheme() -> tuple[str, dict[str, str]]:
+    """The scheme's mode and colours, from the postHook or scheme.json."""
+    if "SCHEME_COLOURS" in os.environ:
+        mode = os.environ.get("SCHEME_MODE", "dark")
+        colours = json.loads(os.environ["SCHEME_COLOURS"])
+    else:
+        path = xdg("XDG_STATE_HOME", ".local/state") / "caelestia/scheme.json"
+        scheme = json.loads(path.read_text(encoding="utf-8"))
+        mode = scheme.get("mode", "dark")
+        colours = scheme["colours"]
+    if not isinstance(colours, dict):
+        raise ValueError("scheme colours are not an object")
+    return ("light" if mode == "light" else "dark"), colours
+
+
+def build_palette(mode: str, colours: dict[str, object]) -> dict:
+    """A Spotifast palette. Colours missing from the scheme are left out so
+    Spotifast's own base palette fills them in."""
+    c = {name: hex for name, value in colours.items() if (hex := clean(value))}
+    out: dict[str, str] = {}
+    for key, role in ROLES.items():
+        if role in c:
+            out[key] = "#" + c[role][:6]
+    if "primary" in c and "onSurface" in c:
+        out["accent_hover"] = "#" + mix(c["primary"][:6], c["onSurface"][:6], 0.15)
+    if "shadow" in c:
+        out["shadow"] = "#" + c["shadow"][:6] + SHADOW_ALPHA[mode]
+    order = [*ROLES, "accent_hover", "shadow"]
+    return {"base": mode, "colors": {k: out[k] for k in sorted(out, key=order.index)}}
+
+
+def render(palette: dict) -> str:
+    return json.dumps(palette, indent=2) + "\n"
+
+
+def theme_dirs() -> list[Path]:
+    """Spotifast themes folders to write: SPOTIFAST_THEMES_DIR if set, else
+    the native folder plus the Flatpak one when that app is installed."""
+    override = os.environ.get("SPOTIFAST_THEMES_DIR")
+    if override:
+        return [Path(override)]
+    dirs = [xdg("XDG_CONFIG_HOME", ".config") / "spotifast/themes"]
+    flatpak = home() / ".var/app" / FLATPAK_ID
+    if flatpak.is_dir():
+        dirs.append(flatpak / "config/spotifast/themes")
+    return dirs
+
+
+def publish(directory: Path, content: str) -> bool:
+    """Atomically replaces `caelestia.json` in `directory`. Returns whether
+    the file changed. The temporary name does not end in `.json`, so
+    Spotifast never reads a half-written palette."""
+    destination = directory / FILENAME
+    try:
+        if destination.read_text(encoding="utf-8") == content:
+            return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".caelestia.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, destination)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    return True
+
+
+def reload_spotifast() -> None:
+    """Asks a running native Spotifast to reload. It never starts the app."""
+    if shutil.which("spotifast") is None:
+        return
+    try:
+        subprocess.run(
+            ["spotifast", "reload-themes"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--stdout", action="store_true", help="print the palette instead of writing it"
+    )
+    args = parser.parse_args()
+
+    try:
+        mode, colours = load_scheme()
+    except (OSError, ValueError, KeyError) as error:
+        print(f"caelestia-spotifast: cannot read the Caelestia scheme: {error}", file=sys.stderr)
+        return 1
+
+    content = render(build_palette(mode, colours))
+    if args.stdout:
+        sys.stdout.write(content)
+        return 0
+
+    changed = False
+    failed = False
+    for directory in theme_dirs():
+        try:
+            changed |= publish(directory, content)
+        except OSError as error:
+            print(f"caelestia-spotifast: cannot write {directory / FILENAME}: {error}", file=sys.stderr)
+            failed = True
+    if changed:
+        reload_spotifast()
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
