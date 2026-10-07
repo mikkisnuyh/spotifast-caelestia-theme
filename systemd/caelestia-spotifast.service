@@ -3,4 +3,7 @@ Description=Write the Caelestia colour scheme as a Spotifast palette
 
 [Service]
 Type=oneshot
-ExecStart=@BIN@/caelestia-spotifast
+# install.sh replaces @EXEC@ with the quoted path of the installed script.
+ExecStart=@EXEC@
+# Leave the detached `spotifast reload-themes` running when the script exits.
+KillMode=process
