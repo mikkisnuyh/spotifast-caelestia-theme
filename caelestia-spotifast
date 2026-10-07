@@ -7,7 +7,8 @@ ${XDG_STATE_HOME:-~/.local/state}/caelestia/scheme.json.
 
 The palette is written to Spotifast's themes folder as `caelestia.json`.
 Spotifast on Linux notices the change by itself; `spotifast reload-themes`
-is also sent to a running instance for older versions.
+is also sent, without waiting for it, when Spotifast is already running, for
+older versions.
 """
 
 import argparse
@@ -47,13 +48,9 @@ ROLES = {
 SHADOW_ALPHA = {"dark": "8c", "light": "32"}
 
 
-def home() -> Path:
-    return Path(os.environ.get("HOME") or Path.home())
-
-
 def xdg(name: str, fallback: str) -> Path:
     value = os.environ.get(name)
-    return Path(value) if value and os.path.isabs(value) else home() / fallback
+    return Path(value) if value and os.path.isabs(value) else Path.home() / fallback
 
 
 def clean(value: object) -> str | None:
@@ -81,6 +78,8 @@ def load_scheme() -> tuple[str, dict[str, str]]:
     else:
         path = xdg("XDG_STATE_HOME", ".local/state") / "caelestia/scheme.json"
         scheme = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(scheme, dict):
+            raise ValueError(f"{path} does not hold a JSON object")
         mode = scheme.get("mode", "dark")
         colours = scheme["colours"]
     if not isinstance(colours, dict):
@@ -100,8 +99,7 @@ def build_palette(mode: str, colours: dict[str, object]) -> dict:
         out["accent_hover"] = "#" + mix(c["primary"][:6], c["onSurface"][:6], 0.15)
     if "shadow" in c:
         out["shadow"] = "#" + c["shadow"][:6] + SHADOW_ALPHA[mode]
-    order = [*ROLES, "accent_hover", "shadow"]
-    return {"base": mode, "colors": {k: out[k] for k in sorted(out, key=order.index)}}
+    return {"base": mode, "colors": out}
 
 
 def render(palette: dict) -> str:
@@ -115,53 +113,70 @@ def theme_dirs() -> list[Path]:
     if override:
         return [Path(override)]
     dirs = [xdg("XDG_CONFIG_HOME", ".config") / "spotifast/themes"]
-    flatpak = home() / ".var/app" / FLATPAK_ID
+    flatpak = Path.home() / ".var/app" / FLATPAK_ID
     if flatpak.is_dir():
         dirs.append(flatpak / "config/spotifast/themes")
     return dirs
 
 
-def publish(directory: Path, content: str) -> bool:
-    """Atomically replaces `caelestia.json` in `directory`. Returns whether
-    the file changed. The temporary name does not end in `.json`, so
-    Spotifast never reads a half-written palette."""
-    destination = directory / FILENAME
-    try:
-        if destination.read_text(encoding="utf-8") == content:
-            return False
-    except (OSError, UnicodeDecodeError):
-        pass
-    directory.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".caelestia.", suffix=".tmp", dir=directory)
+def atomic_write(target: Path, content: str, mode: int) -> None:
+    """Replaces `target` with `content` so that readers see either the old or
+    the new file, and the new one survives a crash. The temporary name ends
+    in `.tmp`, so Spotifast never reads a half-written palette. Also used by
+    lib/config_edit.py."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, destination)
+        os.chmod(temporary, mode)
+        os.replace(temporary, target)
     except BaseException:
         try:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
         raise
+
+
+def publish(directory: Path, content: str) -> bool:
+    """Writes `caelestia.json` in `directory`. Returns whether it changed."""
+    destination = directory / FILENAME
+    try:
+        if destination.read_text(encoding="utf-8") == content:
+            return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    atomic_write(destination, content, 0o644)
     return True
 
 
+def spotifast_running() -> bool:
+    for comm in Path("/proc").glob("[0-9]*/comm"):
+        try:
+            if comm.read_text().strip() == "spotifast":
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def reload_spotifast() -> None:
-    """Asks a running native Spotifast to reload. It never starts the app."""
-    if shutil.which("spotifast") is None:
+    """Asks an already running Spotifast to reload, without waiting for it:
+    this runs inside Caelestia's postHook, which must not be held up."""
+    if shutil.which("spotifast") is None or not spotifast_running():
         return
     try:
-        subprocess.run(
+        subprocess.Popen(
             ["spotifast", "reload-themes"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=5,
+            start_new_session=True,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
         pass
 
 

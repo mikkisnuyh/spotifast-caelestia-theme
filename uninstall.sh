@@ -32,27 +32,23 @@ while (($#)); do
     shift
 done
 
-say() { printf '==> %s\n' "$*"; }
-
 bin_dir=$(realpath -m -- "$bin_dir")
 script=$bin_dir/caelestia-spotifast
-hook=$(printf '%q' "$script")
 cli_json=$config_home/caelestia/cli.json
 units_dir=$config_home/systemd/user
+# shellcheck source=lib/common.sh
+source "$repo/lib/common.sh"
 
-result=$(python3 "$repo/lib/config_edit.py" remove-hook "$cli_json" "$hook") || result=""
+# Removing the script while the hook still runs it would break every scheme
+# change, so nothing is removed unless the hook is gone.
+if ! result=$(python3 "$repo/lib/config_edit.py" remove-hook "$cli_json"); then
+    echo "Nothing was removed: theme.postHook in $cli_json could not be edited (see above)." >&2
+    echo "Fix the file and rerun." >&2
+    exit 1
+fi
 [[ $result == removed ]] && say "Removed the command from theme.postHook in $cli_json"
 
-if [[ -e $units_dir/caelestia-spotifast.path ]]; then
-    if command -v systemctl >/dev/null; then
-        systemctl --user disable --now caelestia-spotifast.path >/dev/null 2>&1 || true
-    fi
-    rm -f -- "$units_dir/caelestia-spotifast.path" "$units_dir/caelestia-spotifast.service"
-    if command -v systemctl >/dev/null; then
-        systemctl --user daemon-reload >/dev/null 2>&1 || true
-    fi
-    say "Removed the systemd path unit"
-fi
+remove_units
 
 if [[ -e $script ]]; then
     rm -f -- "$script"

@@ -14,7 +14,7 @@ on its own and recolours without interrupting playback.
 | `caelestia` CLI fills `spicetify-{dark,light}.ini` | `caelestia-spotifast` builds a palette from the same colours |
 | Written to `~/.config/spicetify/Themes/caelestia/color.ini` | Written to `~/.config/spotifast/themes/caelestia.json` |
 | Runs inside `apply_colours()` | Runs from `theme.postHook`, right after `apply_colours()` |
-| `spicetify watch -s` reloads Spotify | Spotifast watches its themes folder; `spotifast reload-themes` is also sent |
+| `spicetify watch -s` reloads Spotify | Spotifast watches its themes folder; `spotifast reload-themes` is also sent to a running Spotifast, without waiting |
 | `spicetify config current_theme caelestia` once | Choose **caelestia** in Spotifast once |
 
 ## Requirements
@@ -41,11 +41,12 @@ Options:
 | Option | Effect |
 | --- | --- |
 | `--systemd` | Use a systemd user path unit that watches `~/.local/state/caelestia/scheme.json` instead of `theme.postHook`. Leaves `cli.json` untouched. |
-| `--select` | Also select `caelestia` in Spotifast's `settings.json`. Skipped while Spotifast is running, because it would overwrite the change on exit. |
+| `--select` | Also select `caelestia` in Spotifast's `settings.json`. Skipped while Spotifast is running, because it would overwrite the change on exit, and for a `settings.json` Spotifast has not created yet. |
 | `--bin-dir DIR` | Install the script somewhere other than `~/.local/bin`. The hook uses the full path, so it need not be on `PATH`. |
 
-Running `install.sh` again is safe; it never adds the hook twice. Switching between the
-postHook and `--systemd` removes the other trigger.
+Running `install.sh` again is safe; it never adds the hook twice. Running it with another
+`--bin-dir` replaces the hook for the old location (the old script itself is left in place).
+Switching between the postHook and `--systemd` removes the other trigger.
 
 ### What the installer changes
 
@@ -59,8 +60,8 @@ Added:
 Edited:
 
 - `~/.config/caelestia/cli.json`: the script is added to `theme.postHook`. An existing hook is kept
-  and runs first (`<yours>; caelestia-spotifast`). All other settings are preserved; the file is
-  re-indented. The previous version is saved as `cli.json.caelestia-spotifast.bak`. A symlinked
+  and runs first; the script goes on a line of its own after it, so it also runs when your hook ends
+  in a `# comment`. All other settings are preserved; the file is re-indented. The previous version is saved as `cli.json.caelestia-spotifast.bak`. A symlinked
   `cli.json` (e.g. kept in a dotfiles repo) stays a symlink. Invalid JSON is never touched.
 - With `--select` only: `custom_theme` in Spotifast's `settings.json` (backup saved the same way).
 
@@ -74,6 +75,8 @@ Nothing in Caelestia, its Spicetify theme, or Spotifast's built-in palettes is c
 ```
 
 This removes only the hook command, the units, the script and (unless `--keep-theme`) the palette.
+If `cli.json` cannot be edited (for example, it is not valid JSON), nothing is removed, so the
+hook never points at a missing script.
 Choose another theme in Spotifast afterwards; until then it keeps the last Caelestia colours.
 
 ## Colour mapping
